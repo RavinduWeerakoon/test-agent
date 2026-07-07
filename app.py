@@ -1,6 +1,7 @@
 import os
 import json
 import asyncio
+import logging
 from uuid import UUID
 from typing import List, Dict, Any, AsyncGenerator
 from fastapi import FastAPI, Request, HTTPException
@@ -21,23 +22,37 @@ from langgraph.prebuilt import create_react_agent
 # Load environment variables
 load_dotenv()
 
+# Configure Logging for Observability
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger("agent_api")
+
 # Tools definitions
 @tool
 def calculator(expression: str) -> str:
     """Useful for when you need to answer questions about math or execute arithmetic calculations.
     Input should be a mathematical expression, e.g. "2342 * 9482" or "(120 + 45) / 5".
     """
+    logger.info(f"Calculator tool triggered with expression: '{expression}'")
     try:
         # Clean expression to prevent arbitrary code execution
         allowed_chars = "0123456789+-*/(). "
         cleaned = "".join(c for c in expression if c in allowed_chars)
         if len(cleaned) != len(expression):
+            logger.warning(f"Calculator expression contained invalid characters. Cleaned: '{cleaned}'")
             return "Error: Invalid characters in mathematical expression. Only numbers and +, -, *, /, (), and spaces are allowed."
         
         # Safely evaluate mathematical expressions
         val = eval(cleaned, {"__builtins__": None}, {})
+        logger.info(f"Calculator evaluation succeeded. Result: {val}")
         return str(val)
     except Exception as e:
+        logger.error(f"Calculator evaluation failed: {str(e)}")
         return f"Error: {str(e)}"
 
 @tool
@@ -46,6 +61,7 @@ def search_wikipedia(query: str) -> str:
     Input should be a search query, e.g. "Albert Einstein" or "United Nations".
     """
     import requests
+    logger.info(f"Wikipedia search tool triggered with query: '{query}'")
     try:
         search_url = "https://en.wikipedia.org/w/api.php"
         # Step 1: Search Wikipedia for pages matching the query
@@ -58,16 +74,19 @@ def search_wikipedia(query: str) -> str:
         }
         headers = {"User-Agent": "LangChainDemoChatAgent/1.0 (contact@example.com)"}
         
+        logger.info(f"Wikipedia API request: Searching for '{query}'")
         r = requests.get(search_url, params=search_params, headers=headers, timeout=10.0)
         r.raise_for_status()
         search_results = r.json().get("query", {}).get("search", [])
         
         if not search_results:
+            logger.info(f"Wikipedia search returned no results for query: '{query}'")
             return f"No Wikipedia pages found for '{query}'."
         
         # Step 2: Get the summary/extract of the top search result
         page_id = search_results[0]["pageid"]
         title = search_results[0]["title"]
+        logger.info(f"Wikipedia top result page: '{title}' (ID: {page_id})")
         
         summary_params = {
             "action": "query",
@@ -78,15 +97,18 @@ def search_wikipedia(query: str) -> str:
             "format": "json"
         }
         
+        logger.info(f"Wikipedia API request: Fetching intro extract for page ID: {page_id}")
         r = requests.get(search_url, params=summary_params, headers=headers, timeout=10.0)
         r.raise_for_status()
         pages = r.json().get("query", {}).get("pages", {})
         page_data = pages.get(str(page_id), {})
         extract = page_data.get("extract", "No summary extract available.")
         
+        logger.info(f"Wikipedia search succeeded. Page '{title}' summary length: {len(extract)}")
         return f"Wikipedia Title: {title}\nSummary: {extract[:1000]}..."
         
     except Exception as e:
+        logger.error(f"Wikipedia search failed: {str(e)}")
         return f"Error fetching data from Wikipedia: {str(e)}"
 
 # Setup FastAPI App
@@ -126,6 +148,7 @@ class ToolTrackerCallbackHandler(AsyncCallbackHandler):
         except Exception:
             pass
         
+        logger.info(f"[Callback] Agent is starting tool call. Name: '{name}' | Inputs: {inputs}")
         tool_call = {
             "name": name,
             "input": inputs,
@@ -136,30 +159,38 @@ class ToolTrackerCallbackHandler(AsyncCallbackHandler):
 
     async def on_tool_end(self, output: Any, *, run_id: UUID, **kwargs: Any) -> None:
         if run_id in self._runs:
+            logger.info(f"[Callback] Agent completed tool call. Name: '{self._runs[run_id]['name']}'")
             self._runs[run_id]["output"] = str(output)
 
 def get_model(provider: str, api_key: str):
     """Initializes the chat model based on provider and api_key."""
+    logger.info(f"Initializing model provider: '{provider}'")
     if provider == "google":
         key = api_key or os.getenv("GEMINI_API_KEY")
         if not key:
+            logger.error("Gemini API Key validation failed: missing key")
             raise HTTPException(status_code=400, detail="Gemini API Key is missing. Please configure GEMINI_API_KEY.")
         
         from langchain_google_genai import ChatGoogleGenerativeAI
+        logger.info("ChatGoogleGenerativeAI initialized successfully")
         return ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=key, streaming=True, temperature=0.7)
         
     elif provider == "openai":
         key = api_key or os.getenv("OPENAI_API_KEY")
         if not key:
+            logger.error("OpenAI API Key validation failed: missing key")
             raise HTTPException(status_code=400, detail="OpenAI API Key is missing. Please configure OPENAI_API_KEY.")
             
         from langchain_openai import ChatOpenAI
+        logger.info("ChatOpenAI initialized successfully")
         return ChatOpenAI(model="gpt-4o-mini", api_key=key, streaming=True, temperature=0.7)
         
     else:
+        logger.error(f"Model initialization failed: Unsupported provider '{provider}'")
         raise HTTPException(status_code=400, detail=f"Unsupported LLM provider: {provider}")
 
 async def stream_agent_events(payload: ChatPayload) -> AsyncGenerator[str, None]:
+    logger.info(f"Starting streaming event generation session for message: '{payload.message[:50]}...'")
     try:
         llm = get_model(payload.provider, payload.apiKey)
         tools = [calculator, search_wikipedia]
@@ -170,6 +201,7 @@ async def stream_agent_events(payload: ChatPayload) -> AsyncGenerator[str, None]
                               "If you use a tool, explain how you got the result based on the tool's output.")
         
         # Initialize LangGraph Agent
+        logger.info("Compiling LangGraph react agent")
         agent_executor = create_react_agent(llm, tools, prompt=system_instruction)
         
         # Build messages list representing dialogue state
@@ -181,6 +213,7 @@ async def stream_agent_events(payload: ChatPayload) -> AsyncGenerator[str, None]
                 messages.append(AIMessage(content=msg.content))
         messages.append(HumanMessage(content=payload.message))
                 
+        logger.info(f"Invoking astream_events on LangGraph agent. Messages length: {len(messages)}")
         async for event in agent_executor.astream_events(
             {"messages": messages}, 
             version="v2"
@@ -207,19 +240,26 @@ async def stream_agent_events(payload: ChatPayload) -> AsyncGenerator[str, None]
             
             # Tool invocation start
             elif kind == "on_tool_start":
-                yield f"data: {json.dumps({'type': 'tool_start', 'name': event['name'], 'input': event['data'].get('input')})}\n\n"
+                tool_name = event['name']
+                logger.info(f"[Stream Event] Agent started tool: '{tool_name}'")
+                yield f"data: {json.dumps({'type': 'tool_start', 'name': tool_name, 'input': event['data'].get('input')})}\n\n"
                 
             # Tool invocation completion
             elif kind == "on_tool_end":
-                yield f"data: {json.dumps({'type': 'tool_end', 'name': event['name'], 'output': str(event['data'].get('output'))})}\n\n"
+                tool_name = event['name']
+                logger.info(f"[Stream Event] Agent completed tool: '{tool_name}'")
+                yield f"data: {json.dumps({'type': 'tool_end', 'name': tool_name, 'output': str(event['data'].get('output'))})}\n\n"
                 
+        logger.info("Finished streaming events successfully")
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
         
     except Exception as e:
         err_msg = str(e)
+        logger.error(f"Error encountered during stream generation: {err_msg}", exc_info=True)
         yield f"data: {json.dumps({'type': 'error', 'message': err_msg})}\n\n"
 
 async def run_agent_sync(payload: ChatPayload) -> Dict[str, Any]:
+    logger.info(f"Starting non-streaming sync session for message: '{payload.message[:50]}...'")
     llm = get_model(payload.provider, payload.apiKey)
     tools = [calculator, search_wikipedia]
     
@@ -228,6 +268,7 @@ async def run_agent_sync(payload: ChatPayload) -> Dict[str, Any]:
                           "Provide rich, beautiful markdown formatting in your final response including lists, code snippets, bold text, and tables if useful. "
                           "If you use a tool, explain how you got the result based on the tool's output.")
                           
+    logger.info("Compiling LangGraph react agent (sync execution)")
     agent_executor = create_react_agent(llm, tools, prompt=system_instruction)
     
     messages = []
@@ -240,6 +281,7 @@ async def run_agent_sync(payload: ChatPayload) -> Dict[str, Any]:
             
     tracker = ToolTrackerCallbackHandler()
     
+    logger.info(f"Invoking ainvoke on LangGraph agent. Messages length: {len(messages)}")
     result = await agent_executor.ainvoke(
         {"messages": messages},
         config={"callbacks": [tracker]}
@@ -248,6 +290,7 @@ async def run_agent_sync(payload: ChatPayload) -> Dict[str, Any]:
     last_msg = result["messages"][-1]
     output_content = last_msg.content if hasattr(last_msg, "content") else str(last_msg)
     
+    logger.info(f"Non-streaming sync session completed. Final answer length: {len(output_content)} chars | Tool calls: {len(tracker.tool_calls)}")
     return {
         "content": output_content,
         "tool_calls": tracker.tool_calls
@@ -255,10 +298,13 @@ async def run_agent_sync(payload: ChatPayload) -> Dict[str, Any]:
 
 @app.post("/chat")
 async def chat_endpoint(payload: ChatPayload):
+    logger.info(f"POST /chat endpoint called - Provider: '{payload.provider}' | Stream: {payload.stream}")
     try:
+        # Validate model selection and key setup
         _ = get_model(payload.provider, payload.apiKey)
     except HTTPException as e:
         detail = e.detail
+        logger.warning(f"HTTPException validation error in chat_endpoint: '{detail}'")
         if payload.stream:
             return StreamingResponse(
                 (f"data: {json.dumps({'type': 'error', 'message': detail})}\n\n" for _ in range(1)),
@@ -267,6 +313,7 @@ async def chat_endpoint(payload: ChatPayload):
         raise e
     except Exception as e:
         err_msg = str(e)
+        logger.error(f"Internal validation error in chat_endpoint: '{err_msg}'", exc_info=True)
         if payload.stream:
             return StreamingResponse(
                 (f"data: {json.dumps({'type': 'error', 'message': err_msg})}\n\n" for _ in range(1)),
@@ -282,13 +329,18 @@ async def chat_endpoint(payload: ChatPayload):
 
 @app.get("/config")
 def get_config():
-    """Returns which global environment API keys are loaded."""
+    logger.info("GET /config endpoint called")
+    gemini_ready = bool(os.getenv("GEMINI_API_KEY"))
+    openai_ready = bool(os.getenv("OPENAI_API_KEY"))
+    logger.info(f"Config query response - Gemini configured: {gemini_ready} | OpenAI configured: {openai_ready}")
     return {
-        "gemini_configured": bool(os.getenv("GEMINI_API_KEY")),
-        "openai_configured": bool(os.getenv("OPENAI_API_KEY"))
+        "gemini_configured": gemini_ready,
+        "openai_configured": openai_ready
     }
 
 if __name__ == "__main__":
     import uvicorn
+    # Use environment PORT or default to 3000
     port = int(os.getenv("PORT", 3000))
+    logger.info(f"Starting server in manual mode. Port: {port}")
     uvicorn.run("app:app", host="0.0.0.0", port=port, reload=True)
