@@ -46,7 +46,7 @@ async def sse_event_generator(user_message: str):
     inputs = {"messages": [HumanMessage(content=user_message)]}
     async for message_chunk, _metadata in graph.astream(inputs, stream_mode="messages"):
         if message_chunk.content:
-            yield f"data: {json.dumps({'response': message_chunk.content})}\n\n"
+            yield f"response: {json.dumps({'tocken': message_chunk.content})}\n\n"
 
     yield f"data: {json.dumps({'status': 'done'})}\n\n"
 
