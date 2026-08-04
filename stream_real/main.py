@@ -9,6 +9,9 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from pydantic import BaseModel
+from dotenv import load_dotenv
+
+load_dotenv()
 
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
@@ -44,9 +47,11 @@ async def sse_event_generator(user_message: str):
     yield f"data: {json.dumps({'status': 'start', 'query': user_message})}\n\n"
 
     inputs = {"messages": [HumanMessage(content=user_message)]}
-    async for message_chunk, _metadata in graph.astream(inputs, stream_mode="messages"):
-        if message_chunk.content:
-            yield f"response: {json.dumps({'tocken': message_chunk.content})}\n\n"
+    async for chunk in graph.astream(inputs, stream_mode="messages", version="v2"):
+        if chunk["type"] == "messages":
+            token, metadata = chunk["data"]
+            if token.content_blocks:
+                yield f"data: {json.dumps({'node': metadata['langgraph_node'], 'content': token.content_blocks})}\n\n"
 
     yield f"data: {json.dumps({'status': 'done'})}\n\n"
 
@@ -62,4 +67,4 @@ async def chat(payload: ChatRequest):
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000, timeout_keep_alive=120)
+    uvicorn.run(app, host="0.0.0.0", port=5005, timeout_keep_alive=120)
