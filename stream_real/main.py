@@ -43,18 +43,44 @@ class ChatRequest(BaseModel):
 app = FastAPI(title="Simple Q&A Streaming Agent")
 
 
+# ...existing code...
 async def sse_event_generator(user_message: str):
-    yield f"data: {json.dumps({'status': 'start', 'query': user_message})}\n\n"
+    def _extract_text_from_token(token) -> str:
+        if token is None:
+            return ""
+        # Prefer common attributes, fall back to content_blocks or str()
+        if hasattr(token, "content"):
+            return str(getattr(token, "content") or "")
+        if getattr(token, "content_blocks", None):
+            try:
+                parts = []
+                for b in token.content_blocks:
+                    if isinstance(b, dict):
+                        parts.append(b.get("text") or b.get("content") or str(b))
+                    else:
+                        parts.append(getattr(b, "text", None) or getattr(b, "content", None) or str(b))
+                return "".join(parts)
+            except Exception:
+                return str(token.content_blocks)
+        return str(token)
+
+    # start event
+    yield f"event: start\ndata: {json.dumps({'type': 'start', 'query': user_message})}\n\n"
 
     inputs = {"messages": [HumanMessage(content=user_message)]}
     async for chunk in graph.astream(inputs, stream_mode="messages", version="v2"):
         if chunk["type"] == "messages":
             token, metadata = chunk["data"]
-            if token.content_blocks:
-                yield f"data: {json.dumps({'node': metadata['langgraph_node'], 'content': token.content_blocks})}\n\n"
+            content = _extract_text_from_token(token)
+            payload = {
+                "type": "chunk",
+                "node": metadata.get("langgraph_node"),
+                "content": content,
+            }
+            yield f"event: message\ndata: {json.dumps(payload)}\n\n"
 
-    yield f"data: {json.dumps({'status': 'done'})}\n\n"
-
+    # done event
+    yield f"event: done\ndata: {json.dumps({'type': 'done'})}\n\n"
 
 @app.post("/chat")
 async def chat(payload: ChatRequest):
