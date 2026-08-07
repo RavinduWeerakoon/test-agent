@@ -86,3 +86,62 @@ def check_availability(hotel_id: str, room_type: str, check_in: str, check_out: 
         "available_rooms": available,
         "is_available": available > 0,
     }
+
+
+def book_room(hotel_id: str, room_type: str, guest_name: str, check_in: str, check_out: str) -> dict:
+    hotel = _find_hotel(hotel_id)
+    rt = _find_room_type(hotel, room_type)
+    check_in_date, check_out_date = _validate_date_range(check_in, check_out)
+    booked = _rooms_booked(hotel_id, rt.name, check_in_date, check_out_date)
+    if booked >= rt.total_rooms:
+        raise ValueError(
+            f"No {rt.name} rooms available at {hotel.name} for {check_in} to {check_out}"
+        )
+    booking_id = models.next_booking_id()
+    models.BOOKINGS[booking_id] = models.Booking(
+        id=booking_id,
+        hotel_id=hotel_id,
+        room_type=rt.name,
+        guest_name=guest_name,
+        check_in=check_in,
+        check_out=check_out,
+        status="confirmed",
+    )
+    return {
+        "booking_id": booking_id,
+        "hotel_id": hotel_id,
+        "hotel_name": hotel.name,
+        "room_type": rt.name,
+        "guest_name": guest_name,
+        "check_in": check_in,
+        "check_out": check_out,
+        "status": "confirmed",
+    }
+
+
+def cancel_booking(booking_id: str) -> dict:
+    booking = models.BOOKINGS.get(booking_id)
+    if booking is None:
+        raise ValueError(f"Unknown booking_id: {booking_id!r}")
+    if booking.status == "cancelled":
+        raise ValueError(f"Booking {booking_id!r} is already cancelled")
+    booking.status = "cancelled"
+    return {"booking_id": booking_id, "status": "cancelled"}
+
+
+def list_bookings(guest_name: str | None = None) -> list[dict]:
+    bookings = models.BOOKINGS.values()
+    if guest_name:
+        bookings = [b for b in bookings if b.guest_name.lower() == guest_name.lower()]
+    return [
+        {
+            "booking_id": b.id,
+            "hotel_id": b.hotel_id,
+            "room_type": b.room_type,
+            "guest_name": b.guest_name,
+            "check_in": b.check_in,
+            "check_out": b.check_out,
+            "status": b.status,
+        }
+        for b in bookings
+    ]
