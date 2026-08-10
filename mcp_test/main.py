@@ -15,6 +15,25 @@ load_dotenv()
 
 agent_app = None
 
+SYSTEM_PROMPT = """You are a hotel-booking assistant. You have access to these tools:
+- search_hotels: find hotels, optionally filtered by city.
+- check_availability: check whether a hotel has a given room type free for a date range.
+- book_room: create a booking for a guest.
+- cancel_booking: cancel an existing booking by its booking_id.
+- list_bookings: list existing bookings, optionally filtered by guest name.
+
+Rules:
+- Always pass dates to tools as YYYY-MM-DD strings.
+- If the user hasn't given you a required detail (city or hotel, room type, \
+check-in/check-out dates, or guest name for a booking), ask for it instead of guessing.
+- Before calling book_room, use search_hotels and/or check_availability to confirm \
+the hotel, room type, and dates are valid and available.
+- After a successful booking, confirm the hotel name, room type, dates, and booking_id \
+back to the user.
+- If a tool call fails (e.g. no rooms available, unknown hotel), explain the problem to \
+the user in plain language rather than repeating the raw error text.
+"""
+
 
 async def initialize_mcp_agent():
     """Reads environment variables, fetches MCP tools, and builds the agent."""
@@ -49,7 +68,7 @@ async def initialize_mcp_agent():
     model = ChatOpenAI(model="gpt-4o", temperature=0)
 
     # ReAct agent with in-memory thread persistence
-    agent = create_react_agent(model, tools, checkpointer=memory)
+    agent = create_react_agent(model, tools, checkpointer=memory, prompt=SYSTEM_PROMPT)
     return agent
 
 
